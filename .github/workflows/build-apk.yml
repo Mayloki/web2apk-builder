@@ -131,13 +131,19 @@ jobs:
           set -euo pipefail
           if [ ! -f icon.png ]; then echo "Иконка не задана, используется стандартная"; exit 0; fi
           ICON="$PWD/icon.png"
+          # на раннере ImageMagick может не стоять: ставим, если нет ни convert, ни magick
+          if ! command -v convert >/dev/null 2>&1 && ! command -v magick >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq imagemagick
+          fi
+          IM=$(command -v magick || command -v convert)
           RES=app/android/app/src/main/res
           # адаптивная иконка (anydpi) берёт векторный слой из шаблона — убираем, чтобы работали PNG-версии
           rm -rf "$RES/mipmap-anydpi-v26"
           for d in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
             name=${d%%:*}; size=${d##*:}
             mkdir -p "$RES/mipmap-$name"
-            convert "$ICON" -resize "${size}x${size}" "$RES/mipmap-$name/ic_launcher.png"
+            "$IM" "$ICON" -resize "${size}x${size}" "$RES/mipmap-$name/ic_launcher.png"
             cp "$RES/mipmap-$name/ic_launcher.png" "$RES/mipmap-$name/ic_launcher_round.png"
           done
           echo "Иконка приложения применена"
