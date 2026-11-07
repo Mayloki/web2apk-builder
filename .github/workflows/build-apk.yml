@@ -11,6 +11,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      BASE_URL: ${{ vars.WEB2APK_BASE_URL }}
+      RUNNER_SECRET: ${{ secrets.WEB2APK_RUNNER_SECRET }}
     timeout-minutes: 30
     steps:
       - name: Checkout builder
