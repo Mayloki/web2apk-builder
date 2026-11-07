@@ -77,6 +77,29 @@ jobs:
             if (mf === mfOld) fail('MainActivity не найдена в манифесте');
             fs.writeFileSync(mfPath, mf);
           }
+          if (m.hide_nav_bar) {
+            const found = require('child_process').execSync('find android/app/src/main/java -name MainActivity.java').toString().trim().split('\n')[0];
+            if (!found) fail('MainActivity.java не найден');
+            const javaOld = fs.readFileSync(found, 'utf8');
+            const re = /extends\s+BridgeActivity\s*\{/;
+            if (!re.test(javaOld)) fail('MainActivity.java не похожа на шаблон Capacitor');
+            const method = `
+              @Override
+              public void onWindowFocusChanged(boolean hasFocus) {
+                  super.onWindowFocusChanged(hasFocus);
+                  if (hasFocus) {
+                      getWindow().getDecorView().setSystemUiVisibility(
+                          android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                          | android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                          | android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                          | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                          | android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                          | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+                  }
+              }
+          `;
+            fs.writeFileSync(found, javaOld.replace(re, mt => mt + method));
+          }
           {
             const stPath = 'android/app/src/main/res/values/styles.xml';
             const stOld = fs.readFileSync(stPath, 'utf8');
