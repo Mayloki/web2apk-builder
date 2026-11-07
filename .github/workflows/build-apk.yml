@@ -135,7 +135,7 @@ jobs:
           else
             curl --silent --show-error -X POST \
               -H "X-Runner-Secret: $RUNNER_SECRET" \
-              -F "job_id=$JOB_ID" -F "message=Build failed. Open the GitHub Actions run log for details." \
+              -F "job_id=$JOB_ID" -F "message=Ошибка сборки APK. Попробуйте ещё раз." \
               "$BASE_URL/api.php?action=runner_result" || true
             exit 1
           fi
