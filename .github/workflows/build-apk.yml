@@ -66,7 +66,8 @@ jobs:
             .replace(/minSdkVersion\s*=\s*\d+/, 'minSdkVersion = ' + min)
             .replace(/compileSdkVersion\s*=\s*\d+/, 'compileSdkVersion = ' + target)
             .replace(/targetSdkVersion\s*=\s*\d+/, 'targetSdkVersion = ' + target);
-          if (vg === vgOld) fail('SDK-версии не найдены в variables.gradle');
+          const sdkPatterns = [/minSdkVersion\s*=\s*\d+/, /compileSdkVersion\s*=\s*\d+/, /targetSdkVersion\s*=\s*\d+/];
+          if (!sdkPatterns.every(re => re.test(vgOld))) { console.error(vgOld); fail('SDK-версии не найдены в variables.gradle (содержимое выше)'); }
           fs.writeFileSync(vgPath, vg);
           const mfPath = 'android/app/src/main/AndroidManifest.xml';
           if (m.orientation) {
