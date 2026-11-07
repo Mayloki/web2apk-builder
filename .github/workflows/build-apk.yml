@@ -1,4 +1,5 @@
 name: Build Android APK
+run-name: "Web2APK ${{ inputs.job_id }}"
 on:
   workflow_dispatch:
     inputs:
