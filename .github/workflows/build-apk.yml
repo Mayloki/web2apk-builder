@@ -72,7 +72,7 @@ jobs:
           const mfPath = 'android/app/src/main/AndroidManifest.xml';
           if (m.orientation) {
             const mfOld = fs.readFileSync(mfPath, 'utf8');
-            const o = m.orientation === 'landscape' ? 'landscape' : 'portrait';
+            const o = m.orientation === 'landscape' ? 'landscape' : (m.orientation === 'any' ? 'fullSensor' : 'portrait');
             const mf = mfOld.replace(/(<activity\b[^>]*android:name="\.MainActivity")/, '$1 android:screenOrientation="' + o + '"');
             if (mf === mfOld) fail('MainActivity не найдена в манифесте');
             fs.writeFileSync(mfPath, mf);
