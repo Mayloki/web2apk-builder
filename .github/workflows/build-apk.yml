@@ -48,6 +48,12 @@ jobs:
           if node -e "process.exit(require('./meta.json').signing?.mode === 'custom' ? 0 : 1)"; then
             curl --fail --silent --show-error -H "X-Runner-Secret: $RUNNER_SECRET" "$BASE_URL/api.php?action=runner_keystore&job_id=$JOB_ID" -o signing.jks
           fi
+      - name: Fetch app icon (if set)
+        run: |
+          set -euo pipefail
+          if node -e "process.exit(require('./meta.json').has_icon ? 0 : 1)"; then
+            curl --fail --silent --show-error -H "X-Runner-Secret: $RUNNER_SECRET" "$BASE_URL/api.php?action=runner_icon&job_id=$JOB_ID" -o icon.png
+          fi
       - name: Prepare Capacitor project
         run: |
           set -euo pipefail
@@ -120,6 +126,21 @@ jobs:
           EOF
           cd app
           node ../apply-settings.js
+      - name: Apply app icon
+        run: |
+          set -euo pipefail
+          if [ ! -f icon.png ]; then echo "Иконка не задана, используется стандартная"; exit 0; fi
+          ICON="$PWD/icon.png"
+          RES=app/android/app/src/main/res
+          # адаптивная иконка (anydpi) берёт векторный слой из шаблона — убираем, чтобы работали PNG-версии
+          rm -rf "$RES/mipmap-anydpi-v26"
+          for d in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+            name=${d%%:*}; size=${d##*:}
+            mkdir -p "$RES/mipmap-$name"
+            convert "$ICON" -resize "${size}x${size}" "$RES/mipmap-$name/ic_launcher.png"
+            cp "$RES/mipmap-$name/ic_launcher.png" "$RES/mipmap-$name/ic_launcher_round.png"
+          done
+          echo "Иконка приложения применена"
       - name: Apply signing
         run: |
           set -euo pipefail
