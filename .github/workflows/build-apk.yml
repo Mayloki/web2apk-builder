@@ -52,6 +52,41 @@ jobs:
           npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
           npx cap add android
           npx cap sync android
+      - name: Apply APK settings
+        run: |
+          set -euo pipefail
+          cat > apply-settings.js <<'EOF'
+          const fs = require('fs');
+          const m = JSON.parse(fs.readFileSync('../meta.json', 'utf8'));
+          const fail = msg => { console.error('APK settings: ' + msg); process.exit(1); };
+          const min = Number(m.min_sdk || 22), target = Number(m.target_sdk || 34);
+          const vgPath = 'android/variables.gradle';
+          const vgOld = fs.readFileSync(vgPath, 'utf8');
+          const vg = vgOld
+            .replace(/minSdkVersion\s*=\s*\d+/, 'minSdkVersion = ' + min)
+            .replace(/compileSdkVersion\s*=\s*\d+/, 'compileSdkVersion = ' + target)
+            .replace(/targetSdkVersion\s*=\s*\d+/, 'targetSdkVersion = ' + target);
+          if (vg === vgOld) fail('SDK-версии не найдены в variables.gradle');
+          fs.writeFileSync(vgPath, vg);
+          const mfPath = 'android/app/src/main/AndroidManifest.xml';
+          if (m.orientation) {
+            const mfOld = fs.readFileSync(mfPath, 'utf8');
+            const o = m.orientation === 'landscape' ? 'landscape' : 'portrait';
+            const mf = mfOld.replace(/(<activity\b[^>]*android:name="\.MainActivity")/, '$1 android:screenOrientation="' + o + '"');
+            if (mf === mfOld) fail('MainActivity не найдена в манифесте');
+            fs.writeFileSync(mfPath, mf);
+          }
+          if (m.hide_status_bar) {
+            const stPath = 'android/app/src/main/res/values/styles.xml';
+            const stOld = fs.readFileSync(stPath, 'utf8');
+            const st = stOld.replace(/(<style name="AppTheme\.NoActionBar"[^>]*>)/, '$1<item name="android:windowFullscreen">true</item>');
+            if (st === stOld) fail('тема AppTheme.NoActionBar не найдена в styles.xml');
+            fs.writeFileSync(stPath, st);
+          }
+          console.log('APK settings applied:', { min, target, orientation: m.orientation || 'не менять', hide_status_bar: !!m.hide_status_bar });
+          EOF
+          cd app
+          node ../apply-settings.js
       - name: Build debug APK
         run: |
           set -euo pipefail
