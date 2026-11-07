@@ -42,6 +42,12 @@ jobs:
           echo "BASE_URL=$BASE_URL" >> "$GITHUB_ENV"
           echo "JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
           echo "RUNNER_SECRET=$RUNNER_SECRET" >> "$GITHUB_ENV"
+      - name: Fetch signing key (custom only)
+        run: |
+          set -euo pipefail
+          if node -e "process.exit(require('./meta.json').signing?.mode === 'custom' ? 0 : 1)"; then
+            curl --fail --silent --show-error -H "X-Runner-Secret: $RUNNER_SECRET" "$BASE_URL/api.php?action=runner_keystore&job_id=$JOB_ID" -o signing.jks
+          fi
       - name: Prepare Capacitor project
         run: |
           set -euo pipefail
@@ -114,20 +120,57 @@ jobs:
           EOF
           cd app
           node ../apply-settings.js
-      - name: Build debug APK
+      - name: Apply signing
+        run: |
+          set -euo pipefail
+          cat > apply-signing.js <<'EOF'
+          const fs = require('fs');
+          const m = JSON.parse(fs.readFileSync('../meta.json', 'utf8'));
+          const s = m.signing || { mode: 'test' };
+          const setEnv = (k, v) => fs.appendFileSync(process.env.GITHUB_ENV, k + '=' + v + '\n');
+          const fail = msg => { console.error('Signing: ' + msg); process.exit(1); };
+          if (s.mode !== 'custom') { setEnv('WEB2APK_SIGN_MODE', 'test'); process.exit(0); }
+          for (const v of [s.alias, s.store_password, s.key_password]) {
+            if (!v) fail('не переданы алиас или пароли');
+          }
+          [s.store_password, s.key_password].forEach(v => console.log('::add-mask::' + v));
+          const gPath = 'android/app/build.gradle';
+          const gOld = fs.readFileSync(gPath, 'utf8');
+          if (!/buildTypes\s*\{/.test(gOld) || !/buildTypes\s*\{[\s\S]*?release\s*\{/.test(gOld)) fail('блок buildTypes/release не найден в build.gradle');
+          const signingBlock = 'signingConfigs {\n        release {\n            storeFile file("release.jks")\n            storePassword System.getenv("WEB2APK_STORE_PASSWORD")\n            keyAlias System.getenv("WEB2APK_KEY_ALIAS")\n            keyPassword System.getenv("WEB2APK_KEY_PASSWORD")\n        }\n    }\n    ';
+          const gNew = gOld
+            .replace(/(buildTypes\s*\{)/, signingBlock + '$1')
+            .replace(/(buildTypes\s*\{[\s\S]*?release\s*\{)/, '$1\n            signingConfig signingConfigs.release');
+          fs.writeFileSync(gPath, gNew);
+          fs.copyFileSync('../signing.jks', 'android/app/release.jks');
+          setEnv('WEB2APK_SIGN_MODE', 'custom');
+          setEnv('WEB2APK_KEY_ALIAS', s.alias);
+          setEnv('WEB2APK_STORE_PASSWORD', s.store_password);
+          setEnv('WEB2APK_KEY_PASSWORD', s.key_password);
+          console.log('Signing: свой ключ, алиас ' + s.alias);
+          EOF
+          cd app
+          node ../apply-signing.js
+      - name: Build APK
         run: |
           set -euo pipefail
           cd app/android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          if [ "${WEB2APK_SIGN_MODE:-test}" = "custom" ]; then
+            ./gradlew assembleRelease
+            echo "APK_PATH=app/android/app/build/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
+          else
+            ./gradlew assembleDebug
+            echo "APK_PATH=app/android/app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
+          fi
       - name: Upload APK to PHP host
         if: always()
         env:
           JOB_ID: ${{ inputs.job_id }}
         run: |
           set -euo pipefail
-          APK="app/android/app/build/outputs/apk/debug/app-debug.apk"
-          if [ -f "$APK" ]; then
+          APK="${APK_PATH:-}"
+          if [ -n "$APK" ] && [ -f "$APK" ]; then
             curl --fail --silent --show-error -X POST \
               -H "X-Runner-Secret: $RUNNER_SECRET" \
               -F "job_id=$JOB_ID" -F "apk=@$APK" \
