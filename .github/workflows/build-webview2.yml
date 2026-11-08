@@ -39,16 +39,44 @@ jobs:
           New-Item -ItemType Directory -Force app | Out-Null
           Expand-Archive site.zip app -Force
           $meta = Get-Content meta.json -Raw | ConvertFrom-Json
-          if (Test-Path icon.png) {
+          # PNG -> ICO (256x256, PNG внутри ICO). Bitmap.GetHicon() теряет альфа-канал и даёт чёрный квадрат, поэтому не используется.
+          function Convert-PngToIco([string]$pngPath, [string]$icoPath) {
             Add-Type -AssemblyName System.Drawing
-            $img = [System.Drawing.Image]::FromFile((Resolve-Path icon.png))
-            $bmp = New-Object System.Drawing.Bitmap 256,256
-            $g = [System.Drawing.Graphics]::FromImage($bmp)
-            $g.DrawImage($img,0,0,256,256)
-            $h = $bmp.GetHicon()
-            $ico = [System.Drawing.Icon]::FromHandle($h)
-            $fs = [System.IO.File]::Create((Join-Path (Get-Location) 'app/app.ico'))
-            $ico.Save($fs); $fs.Dispose(); $ico.Dispose(); $g.Dispose(); $bmp.Dispose(); $img.Dispose()
+            $src = [System.Drawing.Image]::FromFile($pngPath)
+            try {
+              $bmp = New-Object System.Drawing.Bitmap -ArgumentList 256, 256, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+              try {
+                $g = [System.Drawing.Graphics]::FromImage($bmp)
+                try {
+                  $g.Clear([System.Drawing.Color]::Transparent)
+                  $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                  $g.DrawImage($src, 0, 0, 256, 256)
+                } finally { $g.Dispose() }
+                $ms = New-Object System.IO.MemoryStream
+                try {
+                  $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+                  $png = $ms.ToArray()
+                } finally { $ms.Dispose() }
+              } finally { $bmp.Dispose() }
+            } finally { $src.Dispose() }
+            $out = New-Object System.IO.MemoryStream
+            $w = New-Object System.IO.BinaryWriter -ArgumentList $out
+            try {
+              $w.Write([uint16]0); $w.Write([uint16]1); $w.Write([uint16]1)                     # ICONDIR: тип icon, одно изображение
+              $w.Write([byte]0); $w.Write([byte]0); $w.Write([byte]0); $w.Write([byte]0)        # 0 = 256 px, палитры нет
+              $w.Write([uint16]1); $w.Write([uint16]32)                                          # плоскости, бит на пиксель
+              $w.Write([uint32]$png.Length); $w.Write([uint32]22)                                # размер PNG и смещение данных
+              $w.Write($png)
+              $w.Flush()
+              [System.IO.File]::WriteAllBytes($icoPath, $out.ToArray())
+            } finally { $w.Dispose(); $out.Dispose() }
+          }
+          if (Test-Path icon.png) {
+            try {
+              $pngFull = (Resolve-Path 'icon.png').ProviderPath
+              $icoFull = Join-Path (Get-Location).ProviderPath 'app\app.ico'
+              Convert-PngToIco $pngFull $icoFull
+            } catch { Write-Warning "Иконка не сконвертирована, будет стандартная: $_" }
           }
           $iconTag = if (Test-Path app/app.ico) { '<ApplicationIcon>app.ico</ApplicationIcon>' } else { '' }
           $assemblyName = ([string]$meta.app_name) -replace '[^A-Za-z0-9._-]','_'
