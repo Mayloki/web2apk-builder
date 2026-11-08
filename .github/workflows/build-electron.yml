@@ -76,16 +76,39 @@ jobs:
           cd app
           npm install
           npm run build
-      - name: Return EXE to builder
+      - name: Return EXE to builder in chunks
         if: always()
         shell: pwsh
         env:
           JOB_ID: ${{ inputs.job_id }}
         run: |
           $exe = Get-ChildItem app/dist -Filter *.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($exe) {
-            curl.exe --fail --silent --show-error -X POST -H "X-Runner-Secret: $env:RUNNER_SECRET" -F "job_id=$env:JOB_ID" -F "exe=@$($exe.FullName)" "$env:BASE_URL/api.php?action=runner_result"
-          } else {
-            curl.exe --silent --show-error -X POST -H "X-Runner-Secret: $env:RUNNER_SECRET" -F "job_id=$env:JOB_ID" -F "message=Ошибка сборки Windows Portable" "$env:BASE_URL/api.php?action=runner_result"
+          if (-not $exe) {
+            curl.exe --silent --show-error --fail -X POST -H "X-Runner-Secret: $env:RUNNER_SECRET" -F "job_id=$env:JOB_ID" -F "message=Ошибка сборки Windows Portable" "$env:BASE_URL/api.php?action=runner_result"
             exit 1
+          }
+          $chunkSize = 4MB
+          $total = [int][Math]::Ceiling($exe.Length / $chunkSize)
+          $stream = [System.IO.File]::OpenRead($exe.FullName)
+          $buffer = New-Object byte[] $chunkSize
+          $tempChunk = Join-Path $env:RUNNER_TEMP "vibeengine-exe-chunk.bin"
+          try {
+            for ($i = 0; $i -lt $total; $i++) {
+              $read = $stream.Read($buffer, 0, $buffer.Length)
+              if ($read -le 0) { throw "Unexpected end of EXE while splitting" }
+              [System.IO.File]::WriteAllBytes($tempChunk, $buffer[0..($read - 1)])
+              curl.exe --fail --silent --show-error -X POST `
+                -H "X-Runner-Secret: $env:RUNNER_SECRET" `
+                -F "job_id=$env:JOB_ID" `
+                -F "chunk_index=$i" `
+                -F "total_chunks=$total" `
+                -F "chunk=@$tempChunk;type=application/octet-stream" `
+                "$env:BASE_URL/api.php?action=runner_result_chunk"
+              if ($LASTEXITCODE -ne 0) { throw "Failed to upload EXE chunk $i/$total" }
+              Write-Host "Uploaded EXE chunk $($i + 1)/$total"
+            }
+          }
+          finally {
+            $stream.Dispose()
+            Remove-Item $tempChunk -Force -ErrorAction SilentlyContinue
           }
