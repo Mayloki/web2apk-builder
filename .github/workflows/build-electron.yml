@@ -1,0 +1,91 @@
+name: Build Windows Portable Electron
+run-name: "VibeEngine EXE ${{ inputs.job_id }}"
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Build job id"
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      BASE_URL: ${{ vars.WEB2APK_BASE_URL }}
+      RUNNER_SECRET: ${{ secrets.WEB2APK_RUNNER_SECRET }}
+    steps:
+      - name: Get job details
+        shell: pwsh
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+        run: |
+          if (-not $env:BASE_URL) { throw "WEB2APK_BASE_URL is missing" }
+          if (-not $env:RUNNER_SECRET) { throw "WEB2APK_RUNNER_SECRET is missing" }
+          curl.exe --fail --silent --show-error -H "X-Runner-Secret: $env:RUNNER_SECRET" "$env:BASE_URL/api.php?action=runner_meta&job_id=$env:JOB_ID" -o meta.json
+          curl.exe --fail --silent --show-error -H "X-Runner-Secret: $env:RUNNER_SECRET" "$env:BASE_URL/api.php?action=runner_download&job_id=$env:JOB_ID" -o site.zip
+      - name: Prepare Electron project
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force app | Out-Null
+          Expand-Archive -Path site.zip -DestinationPath app -Force
+          $meta = Get-Content meta.json -Raw | ConvertFrom-Json
+          $safeName = ([string]$meta.app_name).ToLower() -replace '[^a-z0-9-]+','-'
+          if (-not $safeName) { $safeName = "vibeengine-game" }
+          $version = [string]$meta.version_name
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { $version = "1.0.0" }
+          $package = @{
+            name = $safeName.Trim('-')
+            version = $version
+            private = $true
+            main = "main.cjs"
+            scripts = @{ build = "electron-builder --win portable" }
+            devDependencies = @{ electron = "^33.0.0"; "electron-builder" = "^25.1.8" }
+            build = @{
+              appId = [string]$meta.package_name
+              productName = [string]$meta.app_name
+              directories = @{ output = "dist" }
+              files = @("index.html","main.cjs")
+              win = @{ target = @("portable"); artifactName = '${productName}-${version}-portable.${ext}' }
+            }
+          }
+          $package | ConvertTo-Json -Depth 10 | Set-Content app/package.json -Encoding utf8
+          @'
+          const { app, BrowserWindow } = require("electron");
+          const path = require("path");
+          function createWindow() {
+            const win = new BrowserWindow({
+              width: 1280, height: 800, minWidth: 800, minHeight: 600,
+              backgroundColor: "#101114",
+              autoHideMenuBar: true,
+              webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
+            });
+            win.loadFile(path.join(__dirname, "index.html"));
+          }
+          app.whenReady().then(() => {
+            createWindow();
+            app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+          });
+          app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+          '@ | Set-Content app/main.cjs -Encoding utf8
+      - name: Build portable EXE
+        shell: pwsh
+        run: |
+          cd app
+          npm install
+          npm run build
+      - name: Return EXE to builder
+        if: always()
+        shell: pwsh
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+        run: |
+          $exe = Get-ChildItem app/dist -Filter *.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($exe) {
+            curl.exe --fail --silent --show-error -X POST -H "X-Runner-Secret: $env:RUNNER_SECRET" -F "job_id=$env:JOB_ID" -F "exe=@$($exe.FullName)" "$env:BASE_URL/api.php?action=runner_result"
+          } else {
+            curl.exe --silent --show-error -X POST -H "X-Runner-Secret: $env:RUNNER_SECRET" -F "job_id=$env:JOB_ID" -F "message=Ошибка сборки Windows Portable" "$env:BASE_URL/api.php?action=runner_result"
+            exit 1
+          }
