@@ -26,6 +26,9 @@ jobs:
           if (-not $env:RUNNER_SECRET) { throw "WEB2APK_RUNNER_SECRET is missing" }
           curl.exe --fail --silent --show-error -H "X-Runner-Secret: $env:RUNNER_SECRET" "$env:BASE_URL/api.php?action=runner_meta&job_id=$env:JOB_ID" -o meta.json
           curl.exe --fail --silent --show-error -H "X-Runner-Secret: $env:RUNNER_SECRET" "$env:BASE_URL/api.php?action=runner_download&job_id=$env:JOB_ID" -o site.zip
+          if ((Get-Content meta.json -Raw | ConvertFrom-Json).has_icon) {
+            curl.exe --fail --silent --show-error -H "X-Runner-Secret: $env:RUNNER_SECRET" "$env:BASE_URL/api.php?action=runner_icon&job_id=$env:JOB_ID" -o icon.png
+          }
       - name: Prepare Electron project
         shell: pwsh
         run: |
@@ -36,6 +39,21 @@ jobs:
           if (-not $safeName) { $safeName = "vibeengine-game" }
           $version = [string]$meta.version_name
           if ($version -notmatch '^\d+\.\d+\.\d+$') { $version = "1.0.0" }
+          $iconPath = $null
+          if (Test-Path icon.png) {
+            Add-Type -AssemblyName System.Drawing
+            $img = [System.Drawing.Image]::FromFile((Resolve-Path icon.png))
+            try {
+              $bmp = New-Object System.Drawing.Bitmap 256,256
+              try {
+                $g = [System.Drawing.Graphics]::FromImage($bmp)
+                try { $g.DrawImage($img,0,0,256,256); $h = $bmp.GetHicon(); try { $ico = [System.Drawing.Icon]::FromHandle($h); try { $fs = [System.IO.File]::Create((Join-Path (Get-Location) 'app/app.ico')); try { $ico.Save($fs) } finally { $fs.Dispose() } } finally { $ico.Dispose() } } finally { [void][System.Runtime.InteropServices.Marshal]::DestroyIcon($h) } } finally { $g.Dispose() }
+              } finally { $bmp.Dispose() }
+            } finally { $img.Dispose() }
+            $iconPath = 'app.ico'
+          }
+          $winConfig = @{ target = @('portable'); artifactName = '${productName}-${version}-portable.${ext}' }
+          if ($iconPath) { $winConfig.icon = $iconPath }
           $package = @{
             name = $safeName.Trim('-')
             version = $version
@@ -48,7 +66,7 @@ jobs:
               productName = [string]$meta.app_name
               directories = @{ output = "dist" }
               files = @("index.html","main.cjs")
-              win = @{ target = @("portable"); artifactName = '${productName}-${version}-portable.${ext}' }
+              win = $winConfig
             }
           }
           $package | ConvertTo-Json -Depth 10 | Set-Content app/package.json -Encoding utf8
