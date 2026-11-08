@@ -1,0 +1,121 @@
+name: Build Windows WebView2 EXE
+run-name: "WebView2 EXE ${{ inputs.job_id }}"
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Build job id"
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      BASE_URL: ${{ vars.WEB2APK_BASE_URL }}
+      RUNNER_SECRET: ${{ secrets.WEB2APK_RUNNER_SECRET }}
+    steps:
+      - name: Get job details
+        shell: pwsh
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+        run: |
+          if (-not $env:BASE_URL) { throw "WEB2APK_BASE_URL is missing" }
+          if (-not $env:RUNNER_SECRET) { throw "WEB2APK_RUNNER_SECRET is missing" }
+          curl.exe --fail --silent --show-error -H "X-Runner-Secret: $env:RUNNER_SECRET" "$env:BASE_URL/api.php?action=runner_meta&job_id=$env:JOB_ID" -o meta.json
+          curl.exe --fail --silent --show-error -H "X-Runner-Secret: $env:RUNNER_SECRET" "$env:BASE_URL/api.php?action=runner_download&job_id=$env:JOB_ID" -o site.zip
+          if ((Get-Content meta.json -Raw | ConvertFrom-Json).has_icon) {
+            curl.exe --fail --silent --show-error -H "X-Runner-Secret: $env:RUNNER_SECRET" "$env:BASE_URL/api.php?action=runner_icon&job_id=$env:JOB_ID" -o icon.png
+          }
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Prepare WebView2 application
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force app | Out-Null
+          Expand-Archive site.zip app -Force
+          $meta = Get-Content meta.json -Raw | ConvertFrom-Json
+          if (Test-Path icon.png) {
+            Add-Type -AssemblyName System.Drawing
+            $img = [System.Drawing.Image]::FromFile((Resolve-Path icon.png))
+            $bmp = New-Object System.Drawing.Bitmap 256,256
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.DrawImage($img,0,0,256,256)
+            $h = $bmp.GetHicon()
+            $ico = [System.Drawing.Icon]::FromHandle($h)
+            $fs = [System.IO.File]::Create((Join-Path (Get-Location) 'app/app.ico'))
+            $ico.Save($fs); $fs.Dispose(); $ico.Dispose(); $g.Dispose(); $bmp.Dispose(); $img.Dispose()
+          }
+          $iconTag = if (Test-Path app/app.ico) { '<ApplicationIcon>app.ico</ApplicationIcon>' } else { '' }
+          $assemblyName = ([string]$meta.app_name) -replace '[^A-Za-z0-9._-]','_'
+          $titleXml = [System.Security.SecurityElement]::Escape([string]$meta.app_name)
+          if (-not $assemblyName) { $assemblyName = 'FVRGame' }
+          @"
+          <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><PublishSingleFile>true</PublishSingleFile><SelfContained>true</SelfContained><RuntimeIdentifier>win-x64</RuntimeIdentifier><IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract><AssemblyName>$assemblyName</AssemblyName><AssemblyTitle>$titleXml</AssemblyTitle><Version>$($meta.version_name)</Version>$iconTag</PropertyGroup><ItemGroup><PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" /></ItemGroup><ItemGroup><EmbeddedResource Include="index.html" LogicalName="FVRGame.index.html" /></ItemGroup></Project>
+          "@ | Set-Content app/App.csproj -Encoding utf8
+          @'
+          using System;
+          using System.IO;
+          using System.Reflection;
+          using System.Windows.Forms;
+          using Microsoft.Web.WebView2.WinForms;
+          using Microsoft.Web.WebView2.Core;
+          internal static class Program {
+            [STAThread] static void Main() {
+              ApplicationConfiguration.Initialize();
+              Application.Run(new GameWindow());
+            }
+          }
+          internal sealed class GameWindow : Form {
+            private readonly WebView2 view = new WebView2();
+            public GameWindow() {
+              Text = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyTitleAttribute>()?.Title ?? AppDomain.CurrentDomain.FriendlyName;
+              Width = 1280; Height = 800; MinimumSize = new System.Drawing.Size(640, 420);
+              StartPosition = FormStartPosition.CenterScreen;
+              view.Dock = DockStyle.Fill; Controls.Add(view);
+              Shown += async (_,__) => {
+                try {
+                  await view.EnsureCoreWebView2Async();
+                  using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("FVRGame.index.html") ?? throw new Exception("Game data is missing");
+                  var gameDir = Path.Combine(Path.GetTempPath(), "FVRMaker", AppDomain.CurrentDomain.FriendlyName);
+                  Directory.CreateDirectory(gameDir);
+                  var gameFile = Path.Combine(gameDir, "index.html");
+                  using (var output = File.Create(gameFile)) await stream.CopyToAsync(output);
+                  view.Source = new Uri(gameFile, UriKind.Absolute);
+                } catch (Exception ex) { MessageBox.Show(this, "Не удалось запустить игру через WebView2. Установите Microsoft Edge WebView2 Runtime.\n\n" + ex.Message, "Ошибка запуска", MessageBoxButtons.OK, MessageBoxIcon.Error); Close(); }
+              };
+            }
+          }
+          '@ | Set-Content app/Program.cs -Encoding utf8
+      - name: Publish single-file EXE
+        shell: pwsh
+        run: |
+          dotnet publish app/App.csproj -c Release -r win-x64 --self-contained false -o publish
+      - name: Return EXE to builder in chunks
+        if: always()
+        shell: pwsh
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+        run: |
+          $exe = Get-ChildItem publish -Filter *.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) {
+            curl.exe --silent --show-error --fail -X POST -H "X-Runner-Secret: $env:RUNNER_SECRET" -F "job_id=$env:JOB_ID" -F "message=Ошибка сборки WebView2 EXE" "$env:BASE_URL/api.php?action=runner_result"
+            exit 1
+          }
+          $chunkSize = 4MB
+          $total = [int][Math]::Ceiling($exe.Length / $chunkSize)
+          $stream = [System.IO.File]::OpenRead($exe.FullName)
+          $buffer = New-Object byte[] $chunkSize
+          $tempChunk = Join-Path $env:RUNNER_TEMP "webview2-exe-chunk.bin"
+          try {
+            for ($i = 0; $i -lt $total; $i++) {
+              $read = $stream.Read($buffer, 0, $buffer.Length)
+              [System.IO.File]::WriteAllBytes($tempChunk, $buffer[0..($read - 1)])
+              curl.exe --fail --silent --show-error -X POST -H "X-Runner-Secret: $env:RUNNER_SECRET" -F "job_id=$env:JOB_ID" -F "chunk_index=$i" -F "total_chunks=$total" -F "chunk=@$tempChunk;type=application/octet-stream" "$env:BASE_URL/api.php?action=runner_result_chunk"
+              if ($LASTEXITCODE -ne 0) { throw "Failed to upload EXE chunk $i/$total" }
+            }
+          } finally { $stream.Dispose(); Remove-Item $tempChunk -Force -ErrorAction SilentlyContinue }
