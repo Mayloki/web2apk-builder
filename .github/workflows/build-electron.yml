@@ -42,12 +42,21 @@ jobs:
           $iconPath = $null
           if (Test-Path icon.png) {
             Add-Type -AssemblyName System.Drawing
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class FvrNativeMethods {
+            [DllImport("user32.dll", SetLastError = true)]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            public static extern bool DestroyIcon(IntPtr handle);
+          }
+          '@
             $img = [System.Drawing.Image]::FromFile((Resolve-Path icon.png))
             try {
               $bmp = New-Object System.Drawing.Bitmap 256,256
               try {
                 $g = [System.Drawing.Graphics]::FromImage($bmp)
-                try { $g.DrawImage($img,0,0,256,256); $h = $bmp.GetHicon(); try { $ico = [System.Drawing.Icon]::FromHandle($h); try { $fs = [System.IO.File]::Create((Join-Path (Get-Location) 'app/app.ico')); try { $ico.Save($fs) } finally { $fs.Dispose() } } finally { $ico.Dispose() } } finally { [void][System.Runtime.InteropServices.Marshal]::DestroyIcon($h) } } finally { $g.Dispose() }
+                try { $g.DrawImage($img,0,0,256,256); $h = $bmp.GetHicon(); try { $ico = [System.Drawing.Icon]::FromHandle($h); try { $fs = [System.IO.File]::Create((Join-Path (Get-Location) 'app/app.ico')); try { $ico.Save($fs) } finally { $fs.Dispose() } } finally { $ico.Dispose() } } finally { [void][FvrNativeMethods]::DestroyIcon($h) } } finally { $g.Dispose() }
               } finally { $bmp.Dispose() }
             } finally { $img.Dispose() }
             $iconPath = 'app.ico'
